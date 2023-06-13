@@ -1,7 +1,3 @@
-# frozen_string_literal: true
-
-require 'mini_magick'
-
 module Fastlane
   module Actions
     class AndroidAppiconAction < Action
@@ -15,136 +11,58 @@ module Fastlane
             :xxhdpi => ['144x144'],
             :xxxhdpi => ['192x192']
           },
-          launcher_adaptive: {
-            :ldpi => ['81x81'],
-            :mdpi => ['108x108'],
-            :hdpi => ['162x162'],
-            :xhdpi => ['216x216'],
-            :xxhdpi => ['324x324'],
-            :xxxhdpi => ['432x432']
-          },
           notification: {
             :ldpi => ['18x18'],
             :mdpi => ['24x24'],
             :hdpi => ['36x36'],
             :xhdpi => ['48x48'],
             :xxhdpi => ['72x72'],
-            :xxxhdpi => ['96x96']
-          },
-          splash_land: {
-            'land-ldpi' => ['320x200'],
-            'land-mdpi' => ['480x320'],
-            'land-hdpi' => ['800x480'],
-            'land-xhdpi' => ['1280x720'],
-            'land-xxhdpi' => ['1600x960'],
-            'land-xxxhdpi' => ['1920x1280']
-          },
-          splash_port: {
-            'port-ldpi' => ['200x320'],
-            'port-mdpi' => ['320x480'],
-            'port-hdpi' => ['480x800'],
-            'port-xhdpi' => ['720x1280'],
-            'port-xxhdpi' => ['960x1600'],
-            'port-xxxhdpi' => ['1280x1920']
+            :xxxhdpi => ['96x96'],
           }
         }
       end
-
       def self.run(params)
-        Helper::AppiconHelper.set_cli(params[:minimagick_cli])
-
         fname = params[:appicon_image_file]
         custom_sizes = params[:appicon_custom_sizes]
-
+        require 'mini_magick'
+        image = MiniMagick::Image.open(fname)
+        Helper::AppiconHelper.check_input_image_size(image, 512)
+        # Convert image to png
+        image.format 'png'
         icons = Helper::AppiconHelper.get_needed_icons(params[:appicon_icon_types], self.needed_icons, true, custom_sizes)
         icons.each do |icon|
-          image = MiniMagick::Image.open(fname)
-
-          Helper::AppiconHelper.check_input_image_size(image, 1024, 1024)
-
+          width = icon['width']
+          height = icon['height']
           # Custom icons will have basepath and filename already defined
-          if icon.key?('basepath') && icon.key?('filename')
+          if icon.has_key?('basepath') && icon.has_key?('filename')
             basepath = Pathname.new(icon['basepath'])
             filename = icon['filename']
           else
             basepath = Pathname.new("#{params[:appicon_path]}-#{icon['scale']}")
             filename = "#{params[:appicon_filename]}.png"
           end
-
-          width_height = [icon['width'], icon['height']].map(&:to_i)
-          width, height = width_height
-          max = width_height.max
-
-          image.format 'png'
-          image.resize "#{max}x#{max}"
-
-          unless width == height
-            offset =
-              if width > height
-                "+0+#{(width - height) / 2}"
-              elsif height > width
-                "+#{(height - width) / 2}+0"
-              end
-
-            image.crop "#{icon['size']}#{offset}"
-          end
-
           FileUtils.mkdir_p(basepath)
+
+          image.resize "#{width}x#{height}"
           image.write basepath + filename
 
-          if basepath.to_s.match("port-")
-            default_portrait_path = basepath.to_s.gsub("port-", "")
-            FileUtils.mkdir_p(default_portrait_path)
-            image.write default_portrait_path + '/' + filename
+          if icon['device'] == 'launcher'
+            foreground_size = ((width * 2.25) - width) / 2
+            system "convert #{basepath + filename} -bordercolor none -border #{foreground_size}x#{foreground_size} #{basepath}/#{params[:appicon_filename]}_foreground.png"
+            system "convert #{fname} -alpha set \\( +clone -distort DePolar 0 -virtual-pixel HorizontalTile -background None -distort Polar 0 \\) -compose Dst_In -composite -trim +repage -resize #{width}x#{height} #{basepath}/#{params[:appicon_filename]}_round.png"
           end
-
-          next unless params[:generate_rounded]
-
-          rounded_image = MiniMagick::Image.open(fname)
-          rounded_image.format 'png'
-          rounded_image.resize "#{width}x#{height}"
-          rounded_image = round(rounded_image)
-          rounded_image.write basepath + filename.gsub('.png', '_round.png')
         end
 
         UI.success("Successfully stored launcher icons at '#{params[:appicon_path]}'")
       end
-
-      def self.round(img)
-        require 'mini_magick'
-        img.format 'png'
-
-        width = img[:width] - 2
-        radius = width / 2
-
-        mask = ::MiniMagick::Image.open img.path
-        mask.format 'png'
-
-        mask.combine_options do |m|
-          m.alpha 'transparent'
-          m.background 'none'
-          m.fill 'white'
-          m.draw format('roundrectangle 1,1,%s,%s,%s,%s', width, width, radius, radius)
-        end
-
-        masked = img.composite(mask, 'png') do |i|
-          i.alpha "set"
-          i.compose 'DstIn'
-        end
-
-        return masked
+      def self.get_custom_sizes(image, custom_sizes)
       end
-
-      def self.get_custom_sizes(image, custom_sizes); end
-
       def self.description
         "Generate required icon sizes from a master application icon"
       end
-
       def self.authors
         ["@adrum"]
       end
-
       def self.available_options
         [
           FastlaneCore::ConfigItem.new(key: :appicon_image_file,
@@ -174,23 +92,9 @@ module Fastlane
                                description: "Hash of custom sizes - {'path/icon.png' => '256x256'}",
                              default_value: {},
                                   optional: true,
-                                      type: Hash),
-          FastlaneCore::ConfigItem.new(key: :generate_rounded,
-                               description: "Generate round icons?",
-                             default_value: false,
-                                      type: Boolean),
-          FastlaneCore::ConfigItem.new(key: :minimagick_cli,
-                                  env_name: "APPICON_MINIMAGICK_CLI",
-                               description: "Set MiniMagick CLI (auto picked by default). Values are: graphicsmagick, imagemagick",
-                                  optional: true,
-                                      type: String,
-                              verify_block: proc do |value|
-                                              av = %w[graphicsmagick imagemagick]
-                                              UI.user_error!("Unsupported minimagick cli '#{value}', must be: #{av}") unless av.include?(value)
-                                            end)
+                                      type: Hash)
         ]
       end
-
       def self.is_supported?(platform)
         [:android].include?(platform)
       end
